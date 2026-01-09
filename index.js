@@ -19,6 +19,7 @@ const path = require('path');
 const fs = require('fs');
 const fetch = require('node-fetch');
 
+
 const RPC_URL = process.env.RPC_URL || "http://65.109.83.79:7777/rpc";
 const NETWORK_NAME = "casper-test";
 const DAO_CONTRACT_HASH = "hash-5602ff70a5643b82d87302db480387a62d5993a5d2c267e8e88fd93a14e5c368";
@@ -272,7 +273,14 @@ async function putDeployViaRPC(transaction) {
 }
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'https://casper-dao.vercel.app',
+    'https://casper-dao-frontend.vercel.app'
+  ],
+  credentials: true
+}));
 app.use(express.json());
 
 
