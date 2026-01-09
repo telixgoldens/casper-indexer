@@ -23,8 +23,18 @@ const RPC_URL = process.env.RPC_URL || "http://65.109.83.79:7777/rpc";
 const NETWORK_NAME = "casper-test";
 const DAO_CONTRACT_HASH = "hash-5602ff70a5643b82d87302db480387a62d5993a5d2c267e8e88fd93a14e5c368";
 const TOKEN_CONTRACT_HASH = "hash-876899abd9c79c58809b095dadb1a1735ec3dbad58337794cfedc198dd8fd517";
-const KEYS_PATH = path.join(__dirname, 'keys', 'secret_key.pem'); 
-const privateKeyPem = fs.readFileSync(KEYS_PATH, 'utf-8');
+let privateKeyPem;
+
+if (process.env.CASPER_PRIVATE_KEY) {
+  
+  console.log('Loading keys from environment variable');
+  privateKeyPem = process.env.CASPER_PRIVATE_KEY;
+} else {
+  console.log('Loading keys from local file');
+  const KEYS_PATH = path.join(__dirname, 'keys', 'secret_key.pem');
+  privateKeyPem = fs.readFileSync(KEYS_PATH, 'utf-8');
+}
+
 const privateKey = PrivateKey.fromPem(privateKeyPem, KeyAlgorithm.ED25519);
 const publicKey = privateKey.publicKey;
 
