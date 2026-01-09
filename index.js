@@ -510,47 +510,42 @@ app.post("/deploy-create-dao", async (req, res) => {
     const { daoName, description, userPublicKey } = req.body;
     if (!daoName) return res.status(400).json({ error: "DAO name is required" });
 
-    console.log(' Creating DAO:', daoName);
+    console.log('Creating DAO:', daoName);
     console.log('Requested by:', userPublicKey);
     console.log('Token contract:', TOKEN_CONTRACT_HASH);
 
     const rawHash = TOKEN_CONTRACT_HASH.startsWith("hash-")
       ? TOKEN_CONTRACT_HASH.slice(5)
       : TOKEN_CONTRACT_HASH.replace(/^0x/, "");
-
-    const typePrefix = Buffer.from([1]); 
-    const hashBuffer = Buffer.from(rawHash, 'hex');
-    const keyBuffer = Buffer.concat([typePrefix, hashBuffer]);
-
-    console.log('Key buffer length:', keyBuffer.length); 
-    console.log('Key buffer hex:', keyBuffer.toString('hex'));
-
-    const argsMap = {
-      name: CLValue.newCLString(daoName),
-      token_address: CLValue.newCLByteArray(Uint8Array.from(keyBuffer)),
-      token_type: CLValue.newCLString("u256_address")  
-    };
-
-    const args = Args.fromMap(argsMap);
-    const builder = new ContractCallBuilder();
     
-    builder
-      .byHash(DAO_CONTRACT_HASH.slice(5))
-      .entryPoint("create_dao")
-      .from(publicKey)
-      .chainName(NETWORK_NAME)
-      .payment(300_000_000_000)
-      .ttl(1800000)
-      .runtimeArgs(args);
-
-    console.log('Building transaction...');
-    const transaction = builder.buildFor1_5();
+    const keyHash = "0x" + rawHash;
+    const { KeyValue, RuntimeArgs, DeployUtil } = require('casper-js-sdk');
+    const tokenKey = KeyValue.fromHash(keyHash);
     
-    console.log('Signing...');
-    transaction.sign(privateKey);
+    const args = RuntimeArgs.fromMap({
+      name: CLValue.string(daoName),
+      token_address: CLValue.key(tokenKey),  
+      token_type: CLValue.string("u256_address")
+    });
+
+    function toHashBytes(h) {
+      const s = h.startsWith("hash-") ? h.slice(5) : h;
+      return Uint8Array.from(Buffer.from(s, "hex"));
+    }
+
+    const params = new DeployUtil.DeployParams(publicKey, NETWORK_NAME);
+    const session = DeployUtil.ExecutableDeployItem.newStoredContractByHash(
+      toHashBytes(DAO_CONTRACT_HASH),
+      "create_dao",
+      args
+    );
+    const payment = DeployUtil.standardPayment(300000000000);
+    
+    let deploy = DeployUtil.makeDeploy(params, session, payment);
+    deploy = DeployUtil.signDeploy(deploy, privateKey);
 
     console.log('Submitting...');
-    const deployHash = await putDeployViaRPC(transaction);
+    const deployHash = await putDeployViaRPC(deploy);
 
     console.log('DAO deploy submitted! Deploy hash:', deployHash);
 
@@ -562,7 +557,7 @@ app.post("/deploy-create-dao", async (req, res) => {
       message: 'DAO creation submitted. Polling for execution...'
     });
   } catch (err) {
-    console.error(" DAO deploy error:", err);
+    console.error("DAO deploy error:", err);
     console.error('Stack:', err.stack);
     res.status(500).json({ error: err.message });
   }
