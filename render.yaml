@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: casper-indexer
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: RPC_URL
+        value: http://65.109.83.79:7777/rpc
