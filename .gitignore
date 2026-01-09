@@ -1,6 +1,6 @@
 .env
 node_modules
-keys/
+keys
 *.db
 casperkeys/
 votes.db
