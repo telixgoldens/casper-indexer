@@ -495,6 +495,15 @@ app.get('/stats/:daoId/:proposalId', (req, res) => {
   );
 });
 
+app.get('/debug/config', (req, res) => {
+  res.json({
+    DAO_CONTRACT_HASH,
+    TOKEN_CONTRACT_HASH,
+    NETWORK_NAME,
+    RPC_URL,
+    publicKey: publicKey.toHex()
+  });
+});
 
 app.post("/deploy-create-dao", async (req, res) => {
   try {
