@@ -26,9 +26,11 @@ const DAO_CONTRACT_HASH = "hash-5602ff70a5643b82d87302db480387a62d5993a5d2c267e8
 const TOKEN_CONTRACT_HASH = "hash-876899abd9c79c58809b095dadb1a1735ec3dbad58337794cfedc198dd8fd517";
 let privateKeyPem;
 
-if (process.env.CASPER_PRIVATE_KEY) {
-  
-  console.log('Loading keys from environment variable');
+if (process.env.CASPER_PRIVATE_KEY_BASE64) {
+  console.log('Loading keys from base64 env variable');
+  privateKeyPem = Buffer.from(process.env.CASPER_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
+} else if (process.env.CASPER_PRIVATE_KEY) {
+  console.log('Loading keys from env variable');
   privateKeyPem = process.env.CASPER_PRIVATE_KEY;
 } else {
   console.log('Loading keys from local file');
@@ -495,57 +497,53 @@ app.get('/stats/:daoId/:proposalId', (req, res) => {
   );
 });
 
-app.get('/debug/config', (req, res) => {
-  res.json({
-    DAO_CONTRACT_HASH,
-    TOKEN_CONTRACT_HASH,
-    NETWORK_NAME,
-    RPC_URL,
-    publicKey: publicKey.toHex()
-  });
-});
 
 app.post("/deploy-create-dao", async (req, res) => {
   try {
     const { daoName, description, userPublicKey } = req.body;
     if (!daoName) return res.status(400).json({ error: "DAO name is required" });
 
-    console.log('Creating DAO:', daoName);
+    console.log(' Creating DAO:', daoName);
     console.log('Requested by:', userPublicKey);
     console.log('Token contract:', TOKEN_CONTRACT_HASH);
 
     const rawHash = TOKEN_CONTRACT_HASH.startsWith("hash-")
       ? TOKEN_CONTRACT_HASH.slice(5)
       : TOKEN_CONTRACT_HASH.replace(/^0x/, "");
-    
-    const keyHash = "0x" + rawHash;
-    const { KeyValue, RuntimeArgs, DeployUtil } = require('casper-js-sdk');
-    const tokenKey = KeyValue.fromHash(keyHash);
-    
-    const args = RuntimeArgs.fromMap({
-      name: CLValue.string(daoName),
-      token_address: CLValue.key(tokenKey),  
-      token_type: CLValue.string("u256_address")
-    });
 
-    function toHashBytes(h) {
-      const s = h.startsWith("hash-") ? h.slice(5) : h;
-      return Uint8Array.from(Buffer.from(s, "hex"));
-    }
+    const typePrefix = Buffer.from([1]); 
+    const hashBuffer = Buffer.from(rawHash, 'hex');
+    const keyBuffer = Buffer.concat([typePrefix, hashBuffer]);
 
-    const params = new DeployUtil.DeployParams(publicKey, NETWORK_NAME);
-    const session = DeployUtil.ExecutableDeployItem.newStoredContractByHash(
-      toHashBytes(DAO_CONTRACT_HASH),
-      "create_dao",
-      args
-    );
-    const payment = DeployUtil.standardPayment(300000000000);
+    console.log('Key buffer length:', keyBuffer.length); 
+    console.log('Key buffer hex:', keyBuffer.toString('hex'));
+
+    const argsMap = {
+      name: CLValue.newCLString(daoName),
+      token_address: CLValue.newCLByteArray(Uint8Array.from(keyBuffer)),
+      token_type: CLValue.newCLString("u256_address")  
+    };
+
+    const args = Args.fromMap(argsMap);
+    const builder = new ContractCallBuilder();
     
-    let deploy = DeployUtil.makeDeploy(params, session, payment);
-    deploy = DeployUtil.signDeploy(deploy, privateKey);
+    builder
+      .byHash(DAO_CONTRACT_HASH.slice(5))
+      .entryPoint("create_dao")
+      .from(publicKey)
+      .chainName(NETWORK_NAME)
+      .payment(300_000_000_000)
+      .ttl(1800000)
+      .runtimeArgs(args);
+
+    console.log('Building transaction...');
+    const transaction = builder.buildFor1_5();
+    
+    console.log('Signing...');
+    transaction.sign(privateKey);
 
     console.log('Submitting...');
-    const deployHash = await putDeployViaRPC(deploy);
+    const deployHash = await putDeployViaRPC(transaction);
 
     console.log('DAO deploy submitted! Deploy hash:', deployHash);
 
@@ -557,7 +555,7 @@ app.post("/deploy-create-dao", async (req, res) => {
       message: 'DAO creation submitted. Polling for execution...'
     });
   } catch (err) {
-    console.error("DAO deploy error:", err);
+    console.error(" DAO deploy error:", err);
     console.error('Stack:', err.stack);
     res.status(500).json({ error: err.message });
   }
@@ -721,7 +719,6 @@ app.post("/deploy-vote", async (req, res) => {
 
     const deployHash = await putDeployViaRPC(transaction);
 
-    // Start polling for vote execution
     pollForVoteExecution(deployHash, daoId, "1", choice, userPublicKey);
 
     res.json({ 
@@ -731,7 +728,7 @@ app.post("/deploy-vote", async (req, res) => {
     });
     lastDaoCreation = now;
   } catch (err) {
-    console.error("❌ Vote deploy error:", err);
+    console.error("Vote deploy error:", err);
     res.status(500).json({ error: err.message });
   }
 });
