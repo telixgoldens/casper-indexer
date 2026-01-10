@@ -558,10 +558,23 @@ app.post('/test-dao-creation', async (req, res) => {
 
 app.post("/deploy-create-dao", async (req, res) => {
   try {
+    console.log('Received create DAO request');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    
     const { daoName, description, userPublicKey } = req.body;
-    if (!daoName) return res.status(400).json({ error: "DAO name is required" });
+    
+    console.log('Extracted values:');
+    console.log('- daoName:', daoName);
+    console.log('- description:', description);
+    console.log('- userPublicKey:', userPublicKey);
+    
+    if (!daoName) {
+      console.error('DAO name is missing!');
+      return res.status(400).json({ error: "DAO name is required" });
+    }
 
-    console.log(' Creating DAO:', daoName);
+    console.log('Creating DAO:', daoName);
     console.log('Requested by:', userPublicKey);
     console.log('Token contract:', TOKEN_CONTRACT_HASH);
 
@@ -569,18 +582,19 @@ app.post("/deploy-create-dao", async (req, res) => {
       ? TOKEN_CONTRACT_HASH.slice(5)
       : TOKEN_CONTRACT_HASH.replace(/^0x/, "");
 
-    const typePrefix = Buffer.from([1]); 
+    const typePrefix = Buffer.from([1]);
     const hashBuffer = Buffer.from(rawHash, 'hex');
     const keyBuffer = Buffer.concat([typePrefix, hashBuffer]);
 
-    console.log('Key buffer length:', keyBuffer.length); 
-    console.log('Key buffer hex:', keyBuffer.toString('hex'));
+    console.log('Key buffer length:', keyBuffer.length);
 
     const argsMap = {
       name: CLValue.newCLString(daoName),
       token_address: CLValue.newCLByteArray(Uint8Array.from(keyBuffer)),
-      token_type: CLValue.newCLString("u256_address")  
+      token_type: CLValue.newCLString("u256_address")
     };
+
+    console.log('Args created');
 
     const args = Args.fromMap(argsMap);
     const builder = new ContractCallBuilder();
@@ -594,13 +608,16 @@ app.post("/deploy-create-dao", async (req, res) => {
       .ttl(1800000)
       .runtimeArgs(args);
 
-    console.log('Building transaction...');
+    console.log('Transaction builder configured');
+
     const transaction = builder.buildFor1_5();
     
-    console.log('Signing...');
+    console.log('Transaction built');
+    
     transaction.sign(privateKey);
 
-    console.log('Submitting...');
+    console.log('Transaction signed');
+
     const deployHash = await putDeployViaRPC(transaction);
 
     console.log('DAO deploy submitted! Deploy hash:', deployHash);
@@ -614,8 +631,8 @@ app.post("/deploy-create-dao", async (req, res) => {
     });
   } catch (err) {
     console.error(" DAO deploy error:", err);
-    console.error('Stack:', err.stack);
-    res.status(500).json({ error: err.message });
+    console.error("Stack:", err.stack);
+    res.status(500).json({ error: err.message, stack: err.stack });
   }
 });
 
