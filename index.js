@@ -497,6 +497,64 @@ app.get('/stats/:daoId/:proposalId', (req, res) => {
   );
 });
 
+app.post('/test-dao-creation', async (req, res) => {
+  try {
+    console.log('Testing DAO creation on Render...');
+    console.log('RPC_URL:', RPC_URL);
+    console.log('Public key:', publicKey.toHex());
+    console.log('DAO contract:', DAO_CONTRACT_HASH);
+    console.log('Token contract:', TOKEN_CONTRACT_HASH);
+    
+  
+    const testName = "Render Test DAO " + Date.now();
+    
+    const rawHash = TOKEN_CONTRACT_HASH.startsWith("hash-")
+      ? TOKEN_CONTRACT_HASH.slice(5)
+      : TOKEN_CONTRACT_HASH.replace(/^0x/, "");
+    
+    const typePrefix = Buffer.from([1]);
+    const hashBuffer = Buffer.from(rawHash, 'hex');
+    const keyBuffer = Buffer.concat([typePrefix, hashBuffer]);
+
+    const argsMap = {
+      name: CLValue.newCLString(testName),
+      token_address: CLValue.newCLByteArray(Uint8Array.from(keyBuffer)),
+      token_type: CLValue.newCLString("u256_address")
+    };
+
+    const args = Args.fromMap(argsMap);
+    const builder = new ContractCallBuilder();
+    
+    builder
+      .byHash(DAO_CONTRACT_HASH.slice(5))
+      .entryPoint("create_dao")
+      .from(publicKey)
+      .chainName(NETWORK_NAME)
+      .payment(300_000_000_000)
+      .ttl(1800000)
+      .runtimeArgs(args);
+
+    const transaction = builder.buildFor1_5();
+    transaction.sign(privateKey);
+
+    const deployHash = await putDeployViaRPC(transaction);
+
+    res.json({
+      success: true,
+      deployHash,
+      message: 'Test DAO creation submitted from Render',
+      cspr_live: `https://testnet.cspr.live/deploy/${deployHash}`
+    });
+    
+  } catch (err) {
+    console.error('Test DAO error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
 
 app.post("/deploy-create-dao", async (req, res) => {
   try {
