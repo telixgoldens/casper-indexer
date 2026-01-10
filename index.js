@@ -787,6 +787,38 @@ app.get('/clear-simulated-votes', (req, res) => {
   });
 });
 
+app.get('/debug/test-rpc', async (req, res) => {
+  try {
+    console.log('Testing RPC connection from Render...');
+    console.log('RPC_URL:', RPC_URL);
+    
+    const response = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'info_get_status',
+        params: []
+      })
+    });
+
+    const result = await response.json();
+    
+    res.json({
+      rpc_url: RPC_URL,
+      rpc_response: result,
+      success: !result.error
+    });
+  } catch (err) {
+    res.status(500).json({
+      rpc_url: RPC_URL,
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
+
 
 app.get('/extract-dao-id/:deployHash', async (req, res) => {
   try {
