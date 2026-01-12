@@ -40,6 +40,9 @@ if (process.env.CASPER_PRIVATE_KEY_BASE64) {
 
 const privateKey = PrivateKey.fromPem(privateKeyPem, KeyAlgorithm.ED25519);
 const publicKey = privateKey.publicKey;
+const FAUCET_AMOUNT = "100000000000"; // 100 tokens (with 9 decimals)
+const FAUCET_COOLDOWN = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+const faucetClaims = new Map(); 
 
 console.log('Loaded public key:', publicKey.toHex());
 
@@ -593,7 +596,7 @@ app.post("/deploy-create-dao", async (req, res) => {
       token_address: CLValue.newCLByteArray(Uint8Array.from(keyBuffer)),
       token_type: CLValue.newCLString("u256_address")
     };
-
+    
     console.log('Args created');
 
     const args = Args.fromMap(argsMap);
@@ -948,6 +951,24 @@ app.get('/extract-dao-id/:deployHash', async (req, res) => {
     console.error('Error extracting dao_id:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/has-voted/:daoId/:voterPublicKey', (req, res) => {
+  const { daoId, voterPublicKey } = req.params;
+  
+  db.get(
+    "SELECT COUNT(*) as count FROM votes WHERE dao_id = ? AND voter_address = ?",
+    [daoId, voterPublicKey],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      
+      res.json({
+        hasVoted: row.count > 0,
+        daoId,
+        voterPublicKey
+      });
+    }
+  );
 });
 
 const PORT = process.env.PORT || 3001;
