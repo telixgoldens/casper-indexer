@@ -457,16 +457,35 @@ async function putDeployViaRPC(transaction) {
 }
 
 const app = express();
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://casper-dao.vercel.app",
+  "https://casper-dao-frontend.vercel.app",
+];
+
+if (process.env.NODE_ENV !== 'production') {
+  allowedOrigins.push(/\.vercel\.app$/);
+}
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://casper-dao.vercel.app",
-      "https://casper-dao-frontend.vercel.app",
-    ],
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.some(allowed => {
+        if (allowed instanceof RegExp) return allowed.test(origin);
+        return allowed === origin;
+      })) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true,
   }),
 );
+
 app.use(express.json());
 
 app.post("/prepare-vote", async (req, res) => {
