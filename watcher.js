@@ -1,4 +1,4 @@
-const db = require('./db');
+const pool = require('./db');
 require('dotenv').config();
 
 let EventSourceImpl = globalThis.EventSource || null;
@@ -88,8 +88,8 @@ const startWatcher = () => {
           
           console.log(`  DAO ID: ${daoId}, Proposal: ${proposalId}, Choice: ${choice ? 'YES' : 'NO'}, Voter: ${voter}`);
           
-          db.run(
-            "INSERT OR IGNORE INTO votes (deploy_hash, dao_id, proposal_id, voter_address, choice) VALUES (?, ?, ?, ?, ?)",
+          pool.query(
+            "INSERT OR IGNORE INTO votes (deploy_hash, dao_id, proposal_id, voter_address, choice) VALUES ($1, $2, $3, $4, $5)",
             [hash, daoId, proposalId, voter, choice ? 1 : 0],
             (err) => {
               if (err) {
