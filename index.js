@@ -20,7 +20,7 @@ const path = require("path");
 const fs = require("fs");
 const fetch = require("node-fetch");
 const { log } = require("console");
-const pool = require("./db");
+
 
 const RPC_URL = process.env.RPC_URL || "http://65.109.83.79:7777/rpc";
 const NETWORK_NAME = "casper-test";
