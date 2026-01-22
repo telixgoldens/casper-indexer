@@ -13,7 +13,6 @@ const {
   CLValue,
   PublicKey,
   serializeArgs,
-  CLU256,
 } = CasperSDK;
 
 const OpenAI = require("openai");
@@ -21,6 +20,7 @@ const path = require("path");
 const fs = require("fs");
 const fetch = require("node-fetch");
 const { log } = require("console");
+const pool = require("./db");
 
 const RPC_URL = process.env.RPC_URL || "http://65.109.83.79:7777/rpc";
 const NETWORK_NAME = "casper-test";
@@ -55,7 +55,14 @@ const faucetClaims = new Map();
 
 console.log("Loaded public key:", publicKey.toHex());
 
-async function pollForDaoCreation(deployHash, daoName, description, creator) {
+async function pollForDaoCreation(
+  deployHash,
+  daoName,
+  description,
+  tokenAddress,
+  tokenType,
+  creator,
+) {
   let attempts = 0;
   const maxAttempts = 40;
 
@@ -106,9 +113,25 @@ async function pollForDaoCreation(deployHash, daoName, description, creator) {
                 if (addedKey.name?.startsWith("event_dao_created_")) {
                   const daoId = addedKey.name.replace("event_dao_created_", "");
 
-                  db.run(
-                    "INSERT OR REPLACE INTO daos (dao_id, name, description, creator, deploy_hash) VALUES (?, ?, ?, ?, ?)",
-                    [daoId, daoName, description, creator, deployHash],
+                  pool.query(
+                    `INSERT INTO daos (dao_id, name, description, token_address, token_type, creator, deploy_hash) 
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (dao_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    token_address = EXCLUDED.token_address,
+                    token_type = EXCLUDED.token_type,
+                    creator = EXCLUDED.creator,
+                    deploy_hash = EXCLUDED.deploy_hash`,
+                    [
+                      daoId,
+                      daoName,
+                      description,
+                      tokenAddress,
+                      tokenType,
+                      creator,
+                      deployHash,
+                    ],
                     (err) => {
                       if (!err) {
                         console.log(
@@ -201,9 +224,11 @@ async function pollForVoteExecution(
           return;
         }
 
-        db.run(
-          "INSERT OR IGNORE INTO votes (deploy_hash, dao_id, proposal_id, voter_address, choice) VALUES (?, ?, ?, ?, ?)",
-          [deployHash, daoId, proposalId, voter, choice ? 1 : 0], 
+        pool.query(
+          `INSERT INTO votes (deploy_hash, dao_id, proposal_id, voter_address, choice) 
+   VALUES ($1, $2, $3, $4, $5)
+   ON CONFLICT (deploy_hash) DO NOTHING`,
+          [deployHash, daoId, proposalId, voter, choice ? 1 : 0],
           (err) => {
             if (!err) {
               console.log(
@@ -289,7 +314,7 @@ async function pollForProposalCreation(
                   const parts = addedKey.name
                     .replace("event_proposal_created_", "")
                     .split("_");
-                  proposalId = parts[1]; 
+                  proposalId = parts[1];
                   break;
                 }
               }
@@ -299,10 +324,10 @@ async function pollForProposalCreation(
         }
 
         if (proposalId) {
-          db.run(
-            `INSERT OR IGNORE INTO proposals 
-             (proposal_id, dao_id, title, description, voting_duration, creator, deploy_hash, status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
+          pool.query(
+            `INSERT INTO proposals (proposal_id, dao_id, title, description, voting_duration, creator, deploy_hash, status) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+   ON CONFLICT (dao_id, proposal_id) DO NOTHING`,
             [
               proposalId,
               daoId,
@@ -556,7 +581,8 @@ app.post("/prepare-vote", async (req, res) => {
 
 app.post("/submit-signed-deploy", async (req, res) => {
   try {
-    const { signedDeploy, deployJson, daoId, proposalId, choice } = req.body;
+    const { signedDeploy, deployJson, daoId, proposalId, choice, daoData } =
+      req.body;
 
     if (!signedDeploy || !deployJson) {
       return res
@@ -588,7 +614,6 @@ app.post("/submit-signed-deploy", async (req, res) => {
     }
 
     let signatureHex = walletResponse.signatureHex;
-
     if (!signatureHex.startsWith("01") && !signatureHex.startsWith("02")) {
       signatureHex = algorithmPrefix + signatureHex;
     }
@@ -629,13 +654,24 @@ app.post("/submit-signed-deploy", async (req, res) => {
     const deployHash = result.result.deploy_hash;
     console.log("User-signed deploy submitted! Hash:", deployHash);
 
-    const voter = originalDeploy.header?.account;
+    const creator = originalDeploy.header?.account;
 
-    if (choice !== undefined && daoId && proposalId && voter) {
-      console.log(
-        `Starting polling: DAO ${daoId},  Proposal ${proposalId}, Choice: ${choice ? "YES" : "NO"}, Voter: ${voter.substring(0, 10)}...`,
+    if (daoData) {
+      const { name, description, tokenAddress, tokenType } = daoData;
+      console.log(`Starting polling for DAO creation: ${name}`);
+      pollForDaoCreation(
+        deployHash,
+        name,
+        description,
+        tokenAddress,
+        tokenType,
+        creator,
       );
-      pollForVoteExecution(deployHash, daoId, proposalId, choice, voter);
+    } else if (choice !== undefined && daoId && proposalId && creator) {
+      console.log(
+        `Starting polling: DAO ${daoId}, Proposal ${proposalId}, Choice: ${choice ? "YES" : "NO"}`,
+      );
+      pollForVoteExecution(deployHash, daoId, proposalId, choice, creator);
     } else if (req.body.proposalData) {
       const { title, description, votingDuration } = req.body.proposalData;
       console.log(`Starting polling for proposal creation: DAO ${daoId}`);
@@ -645,14 +681,13 @@ app.post("/submit-signed-deploy", async (req, res) => {
         title,
         description,
         votingDuration,
-        voter,
+        creator,
       );
-    } else {
-      console.log("Unknown deploy type, skipping polling");
     }
+
     res.json({
       deployHash,
-      message: "Vote submitted successfully",
+      message: "Deploy submitted successfully",
     });
   } catch (err) {
     console.error("Submit signed deploy error:", err);
@@ -663,40 +698,42 @@ app.post("/submit-signed-deploy", async (req, res) => {
 app.get("/votes/:proposalId", (req, res) => {
   const { proposalId } = req.params;
 
-  db.all(
-    "SELECT * FROM votes WHERE proposal_id = ? ORDER BY timestamp DESC LIMIT 100",
+  pool.query(
+    "SELECT * FROM votes WHERE proposal_id = $1 ORDER BY timestamp DESC LIMIT 100",
     [proposalId],
-    (err, rows) => {
+    (err, result) => {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ votes: rows });
+      res.json({ votes: result.rows });
     },
   );
 });
 
-app.get("/stats/:daoId/:proposalId", (req, res) => {
-  const { daoId, proposalId } = req.params;
+app.get("/stats/:daoId/:proposalId", async (req, res) => {
+  try {
+    const { daoId, proposalId } = req.params;
 
-  db.get(
-    "SELECT COUNT(*) as count FROM votes WHERE dao_id = ? AND proposal_id = ? AND choice = 1",
-    [daoId, proposalId],
-    (err, yesRow) => {
-      if (err) return res.status(500).json({ error: err.message });
+    const yesResult = await pool.query(
+      "SELECT COUNT(*) as count FROM votes WHERE dao_id = $1 AND proposal_id = $2 AND choice = true",
+      [daoId, proposalId]
+    );
 
-      db.get(
-        "SELECT COUNT(*) as count FROM votes WHERE dao_id = ? AND proposal_id = ? AND choice = 0",
-        [daoId, proposalId],
-        (err, noRow) => {
-          if (err) return res.status(500).json({ error: err.message });
+    const noResult = await pool.query(
+      "SELECT COUNT(*) as count FROM votes WHERE dao_id = $1 AND proposal_id = $2 AND choice = false",
+      [daoId, proposalId]
+    );
 
-          res.json({
-            yes: yesRow.count,
-            no: noRow.count,
-            total: yesRow.count + noRow.count,
-          });
-        },
-      );
-    },
-  );
+    const yesCount = parseInt(yesResult.rows[0].count) || 0;
+    const noCount = parseInt(noResult.rows[0].count) || 0;
+
+    res.json({
+      yes: yesCount,
+      no: noCount,
+      total: yesCount + noCount,
+    });
+  } catch (err) {
+    console.error("Error fetching stats:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/test-dao-creation", async (req, res) => {
@@ -756,26 +793,17 @@ app.post("/test-dao-creation", async (req, res) => {
   }
 });
 
-app.post("/deploy-create-dao", async (req, res) => {
+app.post("/prepare-create-dao", async (req, res) => {
   try {
-    console.log("Received create DAO request");
-    console.log("Request body:", JSON.stringify(req.body, null, 2));
-    console.log("Headers:", JSON.stringify(req.headers, null, 2));
+    const { name, description, userPublicKey } = req.body;
 
-    const { daoName, description, userPublicKey } = req.body;
-
-    console.log("Extracted values:");
-    console.log("- daoName:", daoName);
-    console.log("- description:", description);
-    console.log("- userPublicKey:", userPublicKey);
-
-    if (!daoName) {
-      console.error("DAO name is missing!");
-      return res.status(400).json({ error: "DAO name is required" });
+    if (!name || !userPublicKey) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    console.log("Creating DAO:", daoName);
-    console.log("Requested by:", userPublicKey);
+    console.log("Preparing create_dao deploy for user to sign");
+    console.log("User:", userPublicKey);
+    console.log("DAO name:", name);
     console.log("Token contract:", TOKEN_CONTRACT_HASH);
 
     const rawHash = TOKEN_CONTRACT_HASH.startsWith("hash-")
@@ -788,8 +816,9 @@ app.post("/deploy-create-dao", async (req, res) => {
 
     console.log("Key buffer length:", keyBuffer.length);
 
+    const userPubKey = PublicKey.fromHex(userPublicKey);
     const argsMap = {
-      name: CLValue.newCLString(daoName),
+      name: CLValue.newCLString(name),
       token_address: CLValue.newCLByteArray(Uint8Array.from(keyBuffer)),
       token_type: CLValue.newCLString("u256_address"),
     };
@@ -802,7 +831,7 @@ app.post("/deploy-create-dao", async (req, res) => {
     builder
       .byHash(DAO_CONTRACT_HASH.slice(5))
       .entryPoint("create_dao")
-      .from(publicKey)
+      .from(userPubKey)
       .chainName(NETWORK_NAME)
       .payment(300_000_000_000)
       .ttl(1800000)
@@ -811,26 +840,64 @@ app.post("/deploy-create-dao", async (req, res) => {
     console.log("Transaction builder configured");
 
     const transaction = builder.buildFor1_5();
+    const deploy = transaction.getDeploy
+      ? transaction.getDeploy()
+      : transaction;
 
-    console.log("Transaction built");
+    console.log("Transaction built (not signed yet - user will sign)");
 
-    transaction.sign(privateKey);
+    let sessionArgsJson = [];
+    let paymentArgsJson = [];
 
-    console.log("Transaction signed");
+    if (deploy.session?.storedContractByHash?.args) {
+      sessionArgsJson = serializeArgs(deploy.session.storedContractByHash.args);
+    }
 
-    const deployHash = await putDeployViaRPC(transaction);
+    if (deploy.payment?.moduleBytes?.args) {
+      paymentArgsJson = serializeArgs(deploy.payment.moduleBytes.args);
+    }
 
-    console.log("DAO deploy submitted! Deploy hash:", deployHash);
+    const deployJson = {
+      hash: deploy.hash?.value || deploy.hash,
+      header: {
+        account: deploy.header.account.value || deploy.header.account,
+        timestamp: deploy.header.timestamp.toJSON
+          ? deploy.header.timestamp.toJSON()
+          : deploy.header.timestamp,
+        ttl: deploy.header.ttl.toJSON
+          ? deploy.header.ttl.toJSON()
+          : deploy.header.ttl,
+        gas_price: deploy.header.gasPrice,
+        body_hash: deploy.header.bodyHash?.value || deploy.header.bodyHash,
+        dependencies: [],
+        chain_name: deploy.header.chainName,
+      },
+      payment: {
+        ModuleBytes: {
+          module_bytes: "",
+          args: paymentArgsJson,
+        },
+      },
+      session: {
+        StoredContractByHash: {
+          hash:
+            deploy.session.storedContractByHash.hash?.value ||
+            deploy.session.storedContractByHash.hash,
+          entry_point: deploy.session.storedContractByHash.entryPoint,
+          args: sessionArgsJson,
+        },
+      },
+      approvals: [],
+    };
 
-    pollForDaoCreation(deployHash, daoName, description, userPublicKey);
+    console.log("Deploy prepared for user signature");
 
     res.json({
-      deployHash,
-      creator: userPublicKey,
-      message: "DAO creation submitted. Polling for execution...",
+      deployJson,
+      message: "Deploy ready for user to sign with Casper Wallet",
     });
   } catch (err) {
-    console.error(" DAO deploy error:", err);
+    console.error("Prepare create DAO error:", err);
     console.error("Stack:", err.stack);
     res.status(500).json({ error: err.message, stack: err.stack });
   }
@@ -982,30 +1049,30 @@ app.post("/manual-check-vote", async (req, res) => {
 });
 
 app.get("/daos", (req, res) => {
-  db.all("SELECT * FROM daos ORDER BY created_at DESC", (err, rows) => {
+  pool.query("SELECT * FROM daos ORDER BY created_at DESC", (err, result) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ daos: rows });
+    res.json({ daos: result.rows });
   });
 });
 
 app.get("/all-votes", (req, res) => {
-  db.all("SELECT * FROM votes ORDER BY timestamp DESC", (err, rows) => {
+  pool.query("SELECT * FROM votes ORDER BY timestamp DESC", (err, result) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ votes: rows });
+    res.json({ votes: result.rows });
   });
 });
 
 app.get("/clear-simulated-votes", (req, res) => {
-  db.run(
+  pool.query(
     "DELETE FROM votes WHERE deploy_hash LIKE '0x%' AND length(deploy_hash) < 20",
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
 
-      db.get("SELECT COUNT(*) as count FROM votes", (err, row) => {
+      pool.query("SELECT COUNT(*) as count FROM votes", (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({
           message: "Simulated votes cleared",
-          remainingVotes: row.count,
+          remainingVotes: result.rows[0].count,
         });
       });
     },
@@ -1106,14 +1173,14 @@ app.get("/extract-dao-id/:deployHash", async (req, res) => {
 app.get("/has-voted/:daoId/:voterPublicKey", (req, res) => {
   const { daoId, voterPublicKey } = req.params;
 
-  db.get(
-    "SELECT COUNT(*) as count FROM votes WHERE dao_id = ? AND voter_address = ?",
+  pool.query(
+    "SELECT COUNT(*) as count FROM votes WHERE dao_id = $1 AND voter_address = $2",
     [daoId, voterPublicKey],
-    (err, row) => {
+    (err, result) => {
       if (err) return res.status(500).json({ error: err.message });
 
       res.json({
-        hasVoted: row.count > 0,
+        hasVoted: result.rows[0].count > 0,
         daoId,
         voterPublicKey,
       });
@@ -1323,8 +1390,7 @@ app.get("/proposals/:daoId", async (req, res) => {
     const stateRootHash =
       blockResult.result?.block_with_signatures?.block?.Version2?.header
         ?.state_root_hash;
-
-    const response = await fetch(RPC_URL, {
+    const contractResponse = await fetch(RPC_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1339,48 +1405,150 @@ app.get("/proposals/:daoId", async (req, res) => {
       }),
     });
 
-    const result = await response.json();
-    const namedKeys = result.result?.stored_value?.Contract?.named_keys || [];
-    const daoProposals = namedKeys
-      .filter((k) => k.name.startsWith(`event_proposal_created_${daoId}_`))
-      .map((k) => {
-        const parts = k.name.replace("event_proposal_created_", "").split("_");
-        console.log("Event name:", k.name);
-        console.log("parts[0] (dao_id):", parts[0]);
-        console.log("parts[1] (proposal_id):", parts[1]);
-        return {
-          dao_id: parts[0],
-          proposal_id: parts[1],
-          title: "Proposal " + parts[1], 
-          description: "Vote on this proposal",
-          status: "active", 
-        };
+    const contractResult = await contractResponse.json();
+    const namedKeys =
+      contractResult.result?.stored_value?.Contract?.named_keys || [];
+    const metadataDict = namedKeys.find((k) => k.name === "proposal_metadata");
+    const proposalsDict = namedKeys.find((k) => k.name === "proposals");
+    const proposalEvents = namedKeys.filter((k) =>
+      k.name.startsWith(`event_proposal_created_${daoId}_`),
+    );
+
+    console.log(
+      `Found ${proposalEvents.length} proposal events for DAO ${daoId}`,
+    );
+
+    const proposals = [];
+
+    for (const event of proposalEvents) {
+      const parts = event.name
+        .replace("event_proposal_created_", "")
+        .split("_");
+      const proposalId = parts[1];
+      const proposalKey = `${daoId}_${proposalId}`;
+
+      let title = `Proposal ${proposalId}`;
+      let description = "No description available";
+      let status = "active";
+      let startTime = 0;
+      let endTime = 0;
+      let creator = "";
+
+      try {
+        if (metadataDict) {
+          const metadataResponse = await fetch(RPC_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "state_get_dictionary_item",
+              params: {
+                state_root_hash: stateRootHash,
+                dictionary_identifier: {
+                  URef: {
+                    seed_uref: metadataDict.key,
+                    dictionary_item_key: proposalKey,
+                  },
+                },
+              },
+            }),
+          });
+
+          const metadataResult = await metadataResponse.json();
+          const metadataValue =
+            metadataResult.result?.stored_value?.CLValue?.parsed;
+
+          if (metadataValue) {
+            const metaParts = metadataValue.split("||");
+            title = metaParts[0] || title;
+            description = metaParts[1] || description;
+          }
+        }
+
+        if (proposalsDict) {
+          const proposalResponse = await fetch(RPC_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "state_get_dictionary_item",
+              params: {
+                state_root_hash: stateRootHash,
+                dictionary_identifier: {
+                  URef: {
+                    seed_uref: proposalsDict.key,
+                    dictionary_item_key: proposalKey,
+                  },
+                },
+              },
+            }),
+          });
+
+          const proposalResult = await proposalResponse.json();
+          const proposalData =
+            proposalResult.result?.stored_value?.CLValue?.parsed;
+
+          if (proposalData) {
+            const dataParts = proposalData.split("_");
+            startTime = parseInt(dataParts[0]);
+            endTime = parseInt(dataParts[1]);
+            creator = dataParts[2];
+
+            const now = Date.now();
+            if (now < startTime) {
+              status = "pending";
+            } else if (now > endTime) {
+              status = "ended";
+            } else {
+              status = "active";
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Error reading proposal ${proposalId}:`, err.message);
+      }
+
+      proposals.push({
+        dao_id: daoId,
+        proposal_id: proposalId,
+        title,
+        description,
+        status,
+        start_time: startTime,
+        end_time: endTime,
+        creator,
       });
+    }
 
-    console.log(`Found ${daoProposals.length} proposals for DAO ${daoId}`);
-
-    res.json({ proposals: daoProposals });
+    console.log(`Returning ${proposals.length} proposals with metadata`);
+    res.json({ proposals });
   } catch (error) {
     console.error("Get proposals error:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, proposals: [] });
   }
 });
 
 app.get("/dao/:daoId", async (req, res) => {
   try {
     const { daoId } = req.params;
-    db.get("SELECT * FROM daos WHERE dao_id = ?", [daoId], (err, row) => {
-      if (err) {
-        console.error("Error fetching DAO:", err);
-        return res.status(500).json({ error: err.message });
-      }
+    pool.query(
+      "SELECT * FROM daos WHERE dao_id = $1",
+      [daoId],
+      (err, result) => {
+        if (err) {
+          console.error("Error fetching DAO:", err);
+          return res.status(500).json({ error: err.message });
+        }
 
-      if (!row) {
-        return res.status(404).json({ error: "DAO not found" });
-      }
+        if (!result.rows || result.rows.length === 0) {
+          return res.status(404).json({ error: "DAO not found" });
+        }
 
-      res.json(row);
-    });
+        res.json(result.rows[0]);
+      },
+    );
   } catch (error) {
     console.error("Get DAO error:", error);
     res.status(500).json({ error: error.message });
@@ -1390,49 +1558,53 @@ app.get("/dao/:daoId", async (req, res) => {
 app.get("/dao-stats/:daoId", async (req, res) => {
   try {
     const { daoId } = req.params;
-    db.get(
-      "SELECT COUNT(DISTINCT voter_address) as count FROM votes WHERE dao_id = ?",
-      [daoId],
-      (err, memberRow) => {
-        if (err) return res.status(500).json({ error: err.message });
-        db.get(
-          "SELECT COUNT(*) as count FROM votes WHERE dao_id = ?",
-          [daoId],
-          (err, voteRow) => {
-            if (err) return res.status(500).json({ error: err.message });
-            db.get(
-              "SELECT COUNT(*) as count FROM proposals WHERE dao_id = ?",
-              [daoId],
-              (err, proposalRow) => {
-                if (err) {
-                  proposalRow = { count: 0 };
-                }
-                db.get(
-                  "SELECT COUNT(*) as count FROM proposals WHERE dao_id = ? AND status = 'active'",
-                  [daoId],
-                  (err, activeRow) => {
-                    if (err) {
-                      activeRow = { count: 0 };
-                    }
 
-                    res.json({
-                      memberCount: parseInt(memberRow.count) || 0,
-                      totalVotes: parseInt(voteRow.count) || 0,
-                      proposalCount: parseInt(proposalRow.count) || 0,
-                      activeProposals: parseInt(activeRow.count) || 0,
-                    });
-                  },
-                );
-              },
-            );
-          },
-        );
-      },
+    const memberResult = await pool.query(
+      "SELECT COUNT(DISTINCT voter_address) as count FROM votes WHERE dao_id = $1",
+      [daoId]
     );
+
+    const voteResult = await pool.query(
+      "SELECT COUNT(*) as count FROM votes WHERE dao_id = $1",
+      [daoId]
+    );
+
+    const proposalResult = await pool.query(
+      "SELECT COUNT(*) as count FROM proposals WHERE dao_id = $1",
+      [daoId]
+    );
+
+    const activeResult = await pool.query(
+      "SELECT COUNT(*) as count FROM proposals WHERE dao_id = $1 AND status = 'active'",
+      [daoId]
+    );
+
+    res.json({
+      memberCount: parseInt(memberResult.rows[0].count) || 0,
+      totalVotes: parseInt(voteResult.rows[0].count) || 0,
+      proposalCount: parseInt(proposalResult.rows[0].count) || 0,
+      activeProposals: parseInt(activeResult.rows[0].count) || 0,
+    });
   } catch (error) {
     console.error("Get DAO stats error:", error);
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get("/dao/:daoId", (req, res) => {
+  const { daoId } = req.params;
+
+  pool.query("SELECT * FROM daos WHERE dao_id = $1", [daoId], (err, result) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    if (!result.rows || result.rows.length === 0) {
+      return res.status(404).json({ error: "DAO not found" });
+    }
+
+    res.json(result.rows[0]);
+  });
 });
 
 app.post("/claim-faucet", async (req, res) => {
@@ -1457,19 +1629,16 @@ app.post("/claim-faucet", async (req, res) => {
 
     const recipientPubKey = PublicKey.fromHex(recipientPublicKey);
     const accountHashObj = recipientPubKey.accountHash();
-    const accountHashBytes = accountHashObj.hashBytes; 
+    const accountHashBytes = accountHashObj.hashBytes;
 
     console.log(
       "Account hash (hex):",
       Buffer.from(accountHashBytes).toString("hex"),
     );
-    console.log(
-      "Expected hash:      2304565151b2a3687c6d8af60a52cd8ae924083418880aff089c3b460b71165a",
-    );
 
     const keyBytes = new Uint8Array(33);
-    keyBytes[0] = 0x00; 
-    keyBytes.set(accountHashBytes, 1); 
+    keyBytes[0] = 0x00;
+    keyBytes.set(accountHashBytes, 1);
 
     console.log("Sending tokens to correct account...");
 
