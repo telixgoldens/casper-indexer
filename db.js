@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 const connectionString = process.env.DATABASE_URL || 'postgresql://localhost/casper_dao_dev';
+
 const pool = new Pool({
   connectionString,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
@@ -17,11 +18,8 @@ const initializeDatabase = async () => {
   const client = await pool.connect();
   
   try {
-    console.log('Initializing database schema...');
-    await client.query('DROP TABLE IF EXISTS votes CASCADE');
-    await client.query('DROP TABLE IF EXISTS proposals CASCADE');
-    await client.query('DROP TABLE IF EXISTS daos CASCADE');
-    console.log('Old tables dropped (if existed)');
+    console.log('Checking database schema...');
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS daos (
         id SERIAL PRIMARY KEY,
@@ -35,7 +33,6 @@ const initializeDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    console.log('DAOs table ready');
     await client.query(`
       CREATE TABLE IF NOT EXISTS proposals (
         id SERIAL PRIMARY KEY,
@@ -54,7 +51,6 @@ const initializeDatabase = async () => {
         UNIQUE(dao_id, proposal_id)
       )
     `);
-    console.log('Proposals table ready');
     await client.query(`
       CREATE TABLE IF NOT EXISTS votes (
         id SERIAL PRIMARY KEY,
@@ -66,8 +62,8 @@ const initializeDatabase = async () => {
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    console.log('Votes table ready');
-    console.log('Database initialization complete!');
+
+    console.log('Database schema verified/created.');
 
   } catch (err) {
     console.error('Error initializing database:', err);
@@ -75,7 +71,6 @@ const initializeDatabase = async () => {
     client.release();
   }
 };
-
 initializeDatabase();
 
 module.exports = pool;

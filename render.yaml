@@ -1,6 +1,12 @@
+databases:
+  - name: casper-dao-postgres
+    plan: free
+    region: oregon
+    user: casper_user
+
 services:
   - type: web
-    name: casper-dao-postgres
+    name: casper-dao-backend
     env: node
     region: oregon
     plan: free
