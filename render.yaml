@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: casper-indexer
+    name: casper-dao-postgres
     env: node
     region: oregon
     plan: free
