@@ -1189,22 +1189,25 @@ app.get("/extract-dao-id/:deployHash", async (req, res) => {
   }
 });
 
-app.get("/has-voted/:daoId/:voterPublicKey", (req, res) => {
-  const { daoId, voterPublicKey } = req.params;
+app.get("/has-voted/:daoId/:proposalId/:voterPublicKey", async (req, res) => {
+  try {
+    const { daoId, proposalId, voterPublicKey } = req.params;
 
-  pool.query(
-    "SELECT COUNT(*) as count FROM votes WHERE dao_id = $1 AND voter_address = $2",
-    [daoId, voterPublicKey],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
+    const result = await pool.query(
+      "SELECT COUNT(*) as count FROM votes WHERE dao_id = $1 AND proposal_id = $2 AND voter_address = $3",
+      [daoId, proposalId, voterPublicKey]
+    );
 
-      res.json({
-        hasVoted: result.rows[0].count > 0,
-        daoId,
-        voterPublicKey,
-      });
-    },
-  );
+    res.json({
+      hasVoted: parseInt(result.rows[0].count) > 0,
+      daoId,
+      proposalId,
+      voterPublicKey,
+    });
+  } catch (err) {
+    console.error("Has voted check error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/prepare-create-proposal", async (req, res) => {
